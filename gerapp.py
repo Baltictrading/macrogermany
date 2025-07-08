@@ -87,20 +87,29 @@ def fetch_destatis(code: str) -> pd.Series:
 
 @st.cache_data(ttl=3600)
 def fetch_eurostat(dataset: str, filters: str) -> pd.Series:
+    "Fetch series from Eurostat API and parse JSON."  
     url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}?format=JSON&{filters}"
     try:
         d = requests.get(url, timeout=10).json()
-    except:
+    except Exception:
         return pd.Series(dtype=float)
     tl = d.get('dimension',{}).get('time',{}).get('category',{}).get('label',{})
     vals = d.get('value',{})
     rows=[]
     for k,v in vals.items():
         per=tl.get(str(k))
-        try: dt=pd.to_datetime(per)
-        except: continue
+        if per is None:
+            continue
+        try:
+            dt=pd.to_datetime(per)
+        except Exception:
+            continue
         rows.append({'date':dt,'value':v})
+    if not rows:
+        return pd.Series(dtype=float)
     df=pd.DataFrame(rows)
+    if 'value' not in df.columns:
+        return pd.Series(dtype=float)
     df['value']=pd.to_numeric(df['value'],errors='coerce')
     return df.set_index('date')['value'].sort_index()
 
