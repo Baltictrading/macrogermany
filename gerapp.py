@@ -3,217 +3,87 @@ import requests
 import pandas as pd
 import plotly.express as px
 
-# --- Konfiguration & Secrets ---
-# Lege in Streamlit-Secrets an:
-# DESTATIS_USER = "Felix_222@web.de"
-# DESTATIS_PW   = "18Akrapovic03"
-USER_DE = st.secrets["DESTATIS_USER"]
-PW_DE   = st.secrets["DESTATIS_PW"]
+# --- Config ---
+st.set_page_config(layout="wide")
+st.title("Deutschland: OECD-indikatoren")
 
-# --- SDMX-JSON Parser für Destatis & ECB ---
-def parse_sdmx(data: dict) -> pd.Series:
-    """Rekursiver SDMX-Parser sucht nach TIME_PERIOD/OBS_VALUE-Paaren"""
+COUNTRY = "DEU"
+FREQ = "M"  # monatliche Daten
+
+OECD_INDICATORS = {
+    "BIP Jahreswachstumsrate (y/y)": "GDP",
+    "Arbeitskostenindex (LCI)": "LCI",
+    "Business Confidence Index": "BCI_CLI",
+    "Composite Leading Indicator": "CLI",
+    "Bau-PMI": "BCI_CONS"
+}
+
+@st.cache_data(ttl=3600)
+def fetch_oecd(indicator: str, country: str, freq: str = "M") -> pd.Series:
+    """Holt eine Zeitreihe von der OECD SDMX-JSON API."""
+    url = f"https://stats.oecd.org/SDMX-JSON/data/KEI/{indicator}.{country}.{freq}/all"
+    resp = requests.get(url, timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    
+    # Dimensionen extrahieren
+    obs_dim = data["structure"]["dimensions"]["observation"][0]["values"]
+    time_periods = [v["id"] for v in obs_dim]
+    
+    # Series-Daten (es gibt nur eine Serie pro Aufruf)
+    series_dict = list(data["dataSets"][0]["series"].values())[0]
+    observations = series_dict.get("observations", {})
+    
+    # Daten in DataFrame umwandeln
     rows = []
-    def recurse(obj):
-        if isinstance(obj, dict):
-            if "TIME_PERIOD" in obj and "OBS_VALUE" in obj:
-                try:
-                    dt = pd.to_datetime(obj["TIME_PERIOD"])
-                    val = float(obj["OBS_VALUE"])
-                    rows.append({"date": dt, "value": val})
-                except:
-                    pass
-            else:
-                for v in obj.values():
-                    recurse(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                recurse(item)
-    recurse(data)
+    for idx_str, obs in observations.items():
+        idx = int(idx_str)
+        if idx < len(time_periods):
+            date = pd.to_datetime(time_periods[idx])
+            value = obs[0]
+            rows.append({"date": date, "value": value})
     df = pd.DataFrame(rows)
     if df.empty:
         return pd.Series(dtype=float)
-    df = df.dropna(subset=["value"]).set_index("date")["value"].sort_index()
-    return df
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df.set_index("date")["value"].sort_index()
 
-# --- Indikatoren und Quellen ---
-INDICATORS = {
-    # BIP
-    "GDP":                 {"src":"destatis","code":"41111-0002"},  # BIP in Mio. EUR
-    "GDP Growth Rate":     {"src":"eurostat","dataset":"nama_10_gdp","filters":"unit=PC_GDP;geo=DE"},
-    "GDP Annual Growth Rate": {"src":"oecd","indicator":"GDP","country":"DEU","freq":"A"},
+# Sidebar: Auswahl der Indikatoren
+selected = st.sidebar.multiselect("OECD-Indikatoren", list(OECD_INDICATORS.keys()), default=list(OECD_INDICATORS.keys()))
 
-    # Arbeitsmarkt
-    "Unemployment Rate":   {"src":"destatis","code":"23121-0002"},  # %
-    "Unemployment Change": {"src":"calc","base":"Unemployment Rate","type":"diff"},
-    "Labour Costs":        {"src":"oecd","indicator":"LCI","country":"DEU"},
-    "Wages":               {"src":"destatis","code":"41121-0003"},  # Bruttojahresverdienst, EUR
+# Plot
+fig = px.line()
+for name in selected:
+    code = OECD_INDICATORS[name]
+    series = fetch_oecd(code, COUNTRY, FREQ)
+    if not series.empty:
+        fig.add_scatter(x=series.index, y=series.values, mode="lines+markers", name=name)
+fig.update_layout(
+    title="OECD-Zeitreihen (Deutschland)",
+    xaxis_title="Datum", yaxis_title="Indexwert"
+)
+st.plotly_chart(fig, use_container_width=True)
 
-    # Inflation
-    "Inflation Rate":      {"src":"eurostat","dataset":"prc_hicp_midx","filters":"precision=1;unitCode=I15;geo=DE"},
-    "Inflation Rate MoM":  {"src":"calc","base":"Inflation Rate","type":"pct_change_m"},
-    "CPI":                 {"src":"destatis","code":"43121-0002"},
-    "Harmonised CPI":      {"src":"destatis","code":"43190-0001"},
-    "Core CPI":            {"src":"destatis","code":"43121-0004"},
-    "Core Inflation Rate": {"src":"calc","base":"Core CPI","type":"pct_change_y"},
-    "Producer Prices":     {"src":"eurostat","dataset":"prc_ppp_ind","filters":"precision=1;unitCode=I15;geo=DE"},
-    "Producer Prices Change": {"src":"calc","base":"Producer Prices","type":"pct_change_y"},
-    "Export Prices":       {"src":"destatis","code":"43140-0002"},
-    "Import Prices":       {"src":"destatis","code":"43150-0002"},
-    "Import Prices MoM":   {"src":"calc","base":"Import Prices","type":"pct_change_m"},
-    "Import Prices YoY":   {"src":"calc","base":"Import Prices","type":"pct_change_y"},
+# Table
+st.subheader("Tabelle: Letzte 13 Perioden")
+data = {}
+# Bestimme Zeitpunkte aus erster Serie
+dates = None
+if selected:
+    first_code = OECD_INDICATORS[selected[0]]
+    first_ser = fetch_oecd(first_code, COUNTRY, FREQ)
+    dates = first_ser.sort_index(ascending=False).index[:13]
+cols = [d.strftime('%b %Y') for d in dates] if dates is not None else []
+for name in selected:
+    code = OECD_INDICATORS[name]
+    ser = fetch_oecd(code, COUNTRY, FREQ).sort_index(ascending=False).head(13)
+    vals = [f"{v:.2f}" for v in ser.tolist()]
+    if len(vals) < len(cols):
+        vals += [""] * (len(cols) - len(vals))
+    data[name] = vals
 
-    # Zinsen
-    "Interest Rate":       {"src":"ecb","code":"M.M.DE.RT.0000.EUR.4F.G_N.A.1_STS.A"},
-    "Interbank Rate":      {"src":"ecb","code":"M.M.DE.RT.0000.EUR.4F.G_N.A.1_STS.M.M"},
+df = pd.DataFrame.from_dict(data, orient='index', columns=cols)
+df.index.name = 'Indikator'
+st.dataframe(df)
 
-    # Außenwirtschaft
-    "Exports":             {"src":"destatis","code":"43100-0001"},
-    "Imports":             {"src":"destatis","code":"43110-0001"},
-    "Balance of Trade":    {"src":"destatis","code":"43120-0001"},
-    "Current Account":     {"src":"bundesbank","code":"BBK01_WT5514"},  # Beispiel Bundesbank
-    "Current Account to GDP": {"src":"calc","base1":"Current Account","base2":"GDP","type":"ratio"},
-    "Auto Exports":        {"src":"destatis","code":"23210-0001"},
-
-    # Industrie & Sentiment
-    "Industrial Production":      {"src":"ecb","code":"M.M.DE.IPG.IND.G_N.A.1_STS.M"},
-    "Industrial Production MoM":  {"src":"calc","base":"Industrial Production","type":"pct_change_m"},
-    "Car Production":            {"src":"destatis","code":"23230-0001"},
-    "Business Confidence":       {"src":"oecd","indicator":"BCI_CLI","country":"DEU"},
-
-    # Konsum & Bau
-    "Consumer Confidence":    {"src":"destatis","code":"23311-0001"},
-    "Retail Sales MoM":       {"src":"destatis","code":"63211-0002"},
-    "Retail Sales YoY":       {"src":"calc","base":"Retail Sales MoM","type":"pct_change_y"},
-    "Consumer Spending":      {"src":"destatis","code":"63121-0001"},
-    "Construction Output":    {"src":"destatis","code":"63411-0001"},
-    "Building Permits":        {"src":"destatis","code":"63421-0001"},
-    "House Price Index":      {"src":"destatis","code":"..."},  # Code fehlt
-    "House Price YoY":         {"src":"calc","base":"House Price Index","type":"pct_change_y"},
-
-    # PMI (OECD)
-    "Manufacturing PMI":  {"src":"oecd","indicator":"CLI_MANU","country":"DEU"},
-    "Services PMI":       {"src":"oecd","indicator":"CLI_SERV","country":"DEU"},
-    "Composite PMI":      {"src":"oecd","indicator":"CLI_COMPO","country":"DEU"},
-}
-
-# --- Fetch-Funktionen ---
-@st.cache_data(ttl=3600)
-def fetch_destatis(code: str) -> pd.Series:
-    url = "https://api-genesis.destatis.de/SDEServer/rest/data"
-    params = {"searchText": code, "startPeriod": "2010-01"}
-    try:
-        r = requests.get(url, params=params, auth=(USER_DE, PW_DE), timeout=10)
-        r.raise_for_status()
-        data = r.json()
-    except:
-        return pd.Series(dtype=float)
-    # implementiere JSON->Series-Parsing
-    return pd.Series(dtype=float)
-
-@st.cache_data(ttl=3600)
-def fetch_eurostat(dataset: str, filters: str) -> pd.Series:
-    "Fetch series from Eurostat API and parse JSON."  
-    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}?format=JSON&{filters}"
-    try:
-        d = requests.get(url, timeout=10).json()
-    except Exception:
-        return pd.Series(dtype=float)
-    tl = d.get('dimension',{}).get('time',{}).get('category',{}).get('label',{})
-    vals = d.get('value',{})
-    rows=[]
-    for k,v in vals.items():
-        per=tl.get(str(k))
-        if per is None:
-            continue
-        try:
-            dt=pd.to_datetime(per)
-        except Exception:
-            continue
-        rows.append({'date':dt,'value':v})
-    if not rows:
-        return pd.Series(dtype=float)
-    df=pd.DataFrame(rows)
-    if 'value' not in df.columns:
-        return pd.Series(dtype=float)
-    df['value']=pd.to_numeric(df['value'],errors='coerce')
-    return df.set_index('date')['value'].sort_index()
-
-@st.cache_data(ttl=3600)
-def fetch_ecb(code: str) -> pd.Series:
-    url=f"https://sdw-wsrest.ecb.europa.eu/service/data/{code}"
-    try:
-        j=requests.get(url,headers={'Accept':'application/json'}, timeout=10).json()
-    except:
-        return pd.Series(dtype=float)
-    return pd.Series(dtype=float)
-
-@st.cache_data(ttl=3600)
-def fetch_oecd(ind: str, country: str, freq: str='M') -> pd.Series:
-    url=f"https://stats.oecd.org/SDMX-JSON/data/KEI/{ind}.{country}.{freq}/all"
-    try:
-        j=requests.get(url,timeout=10).json()
-    except:
-        return pd.Series(dtype=float)
-    # einfacher Parser
-    return pd.Series(dtype=float)
-
-# Verzögerte Berechnung (Differenz/MoM/YoY/Ratio)
-def get_series(name: str) -> pd.Series:
-    cfg = INDICATORS[name]
-    src = cfg['src']
-    # Destatis
-    if src == 'destatis':
-        return fetch_destatis(cfg['code'])
-    # Eurostat
-    if src == 'eurostat':
-        return fetch_eurostat(cfg['dataset'], cfg['filters'])
-    # ECB
-    if src == 'ecb':
-        return fetch_ecb(cfg['code'])
-    # OECD
-    if src == 'oecd':
-        return fetch_oecd(cfg['indicator'], cfg.get('country', 'DEU'), cfg.get('freq', 'M'))
-    # Calculations
-    if src == 'calc':
-        t = cfg['type']
-        if t == 'diff':
-            return get_series(cfg['base']).diff()
-        if t == 'pct_change_m':
-            return get_series(cfg['base']).pct_change(1) * 100
-        if t == 'pct_change_y':
-            return get_series(cfg['base']).pct_change(12) * 100
-        if t == 'ratio':
-            num = get_series(cfg['base1'])
-            den = get_series(cfg['base2'])
-            return num.div(den)
-        return pd.Series(dtype=float)
-    # Fallback
-    return pd.Series(dtype=float)
-
-# --- UI ---
-st.title('Deutschland Dashboard')
-mode=st.sidebar.radio('Darstellung',['Grafik','Tabelle'])
-metrics=st.sidebar.multiselect('Indikatoren',list(INDICATORS.keys()),default=list(INDICATORS.keys()))
-
-if mode=='Grafik':
-    fig=px.line()
-    for m in metrics:
-        s=get_series(m)
-        if not s.empty:
-            fig.add_scatter(x=s.index,y=s.values,mode='lines',name=m)
-    fig.update_layout(xaxis_title='Datum',yaxis_title='Wert')
-    st.plotly_chart(fig,use_container_width=True)
-else:
-    first=get_series(metrics[0]).sort_index(ascending=False)
-    dates=first.index[:13]
-    cols=[d.strftime('%b %Y') for d in dates]
-    table={}
-    for m in metrics:
-        vals=get_series(m).sort_index(ascending=False).head(13).tolist()
-        table[m]=[f"{v:.2f}" if pd.notna(v) else "" for v in vals]
-    df=pd.DataFrame.from_dict(table,orient='index',columns=cols)
-    df.index.name='Indikator'
-    st.dataframe(df)
-
-st.markdown('*Datenquellen: Destatis (Basic Auth), Eurostat, ECB, OECD.*')
+st.markdown("*Quelle: OECD SDMX-JSON API*")
