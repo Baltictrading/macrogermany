@@ -134,18 +134,35 @@ def fetch_oecd(ind: str, country: str, freq: str='M') -> pd.Series:
 
 # Verzögerte Berechnung (Differenz/MoM/YoY/Ratio)
 def get_series(name: str) -> pd.Series:
-    cfg=INDICATORS[name]
-    src=cfg['src']
-    if src=='destatis': return fetch_destatis(cfg['code'])
-    if src=='eurostat':return fetch_eurostat(cfg['dataset'],cfg['filters'])
-    if src=='ecb':      return fetch_ecb(cfg['code'])
-    if src=='oecd':     return fetch_oecd(cfg['indicator'],cfg['country'],cfg.get('freq','M'))
-    if src=='calc':
-        base=get_series(cfg['base'])
-        if cfg['type']=='diff': return base.diff()
-        if cfg['type']=='pct_change_m': return base.pct_change(1)*100
-        if cfg['type']=='pct_change_y': return base.pct_change(12)*100
-        if cfg['type']=='ratio':return get_series(cfg['base1']).div(get_series(cfg['base2']))
+    cfg = INDICATORS[name]
+    src = cfg['src']
+    # Destatis
+    if src == 'destatis':
+        return fetch_destatis(cfg['code'])
+    # Eurostat
+    if src == 'eurostat':
+        return fetch_eurostat(cfg['dataset'], cfg['filters'])
+    # ECB
+    if src == 'ecb':
+        return fetch_ecb(cfg['code'])
+    # OECD
+    if src == 'oecd':
+        return fetch_oecd(cfg['indicator'], cfg.get('country', 'DEU'), cfg.get('freq', 'M'))
+    # Calculations
+    if src == 'calc':
+        t = cfg['type']
+        if t == 'diff':
+            return get_series(cfg['base']).diff()
+        if t == 'pct_change_m':
+            return get_series(cfg['base']).pct_change(1) * 100
+        if t == 'pct_change_y':
+            return get_series(cfg['base']).pct_change(12) * 100
+        if t == 'ratio':
+            num = get_series(cfg['base1'])
+            den = get_series(cfg['base2'])
+            return num.div(den)
+        return pd.Series(dtype=float)
+    # Fallback
     return pd.Series(dtype=float)
 
 # --- UI ---
