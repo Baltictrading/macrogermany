@@ -81,34 +81,22 @@ INDICATORS = {
 # --- Fetch Functions Implementierung ---
 @st.cache_data(ttl=3600)
 def fetch_destatis(series_code: str) -> pd.Series:
+    """Fetch a series from Destatis with Basic Auth; return empty Series on error."""
     url = "https://api-genesis.destatis.de/SDEServer/rest/data"
     params = {"searchText": series_code, "startPeriod": "2010-01"}
-    resp = requests.get(url, params=params, auth=(USER_DESTATIS, PW_DESTATIS))
-    return parse_sdmx(resp.json())
-
-@st.cache_data(ttl=3600)
-def fetch_eurostat(dataset: str, filters: str) -> pd.Series:
-    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}?format=JSON&{filters}"
-    data = requests.get(url).json()
-    return parse_eurostat(data)
-
-@st.cache_data(ttl=3600)
-def fetch_ecb(series: str) -> pd.Series:
-    url = f"https://sdw-wsrest.ecb.europa.eu/service/data/{series}"
-    data = requests.get(url, headers={"Accept":"application/json"}).json()
+    try:
+        resp = requests.get(url, params=params, auth=(USER_DESTATIS, PW_DESTATIS), timeout=10)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Fehler bei Destatis-Abfrage {series_code}: {e}")
+        return pd.Series(dtype=float)
+    # parse SDMX-JSON or XML; using placeholder parser
+    try:
+        data = resp.json()
+    except ValueError:
+        st.error(f"Unerwartetes Format bei Destatis-Antwort für {series_code}")
+        return pd.Series(dtype=float)
     return parse_sdmx(data)
-
-@st.cache_data(ttl=3600)
-def fetch_oecd(indicator: str, country: str, freq: str="M") -> pd.Series:
-    url = f"https://stats.oecd.org/SDMX-JSON/data/KEI/{indicator}.{country}.{freq}/all"
-    data = requests.get(url).json()
-    return parse_oecd(data)
-
-# --- Parsing-Hilfsfunktionen ---
-def parse_sdmx(obj: dict) -> pd.Series:
-    # universelles SDMX-JSON/REST-Parsing
-    # implementiere nach DSD
-    return pd.Series(dtype=float)
 
 
 def parse_eurostat(obj: dict) -> pd.Series:
