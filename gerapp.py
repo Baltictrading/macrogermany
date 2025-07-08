@@ -10,6 +10,32 @@ import plotly.express as px
 USER_DE = st.secrets["DESTATIS_USER"]
 PW_DE   = st.secrets["DESTATIS_PW"]
 
+# --- SDMX-JSON Parser für Destatis & ECB ---
+def parse_sdmx(data: dict) -> pd.Series:
+    """Rekursiver SDMX-Parser sucht nach TIME_PERIOD/OBS_VALUE-Paaren"""
+    rows = []
+    def recurse(obj):
+        if isinstance(obj, dict):
+            if "TIME_PERIOD" in obj and "OBS_VALUE" in obj:
+                try:
+                    dt = pd.to_datetime(obj["TIME_PERIOD"])
+                    val = float(obj["OBS_VALUE"])
+                    rows.append({"date": dt, "value": val})
+                except:
+                    pass
+            else:
+                for v in obj.values():
+                    recurse(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                recurse(item)
+    recurse(data)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.Series(dtype=float)
+    df = df.dropna(subset=["value"]).set_index("date")["value"].sort_index()
+    return df
+
 # --- Indikatoren und Quellen ---
 INDICATORS = {
     # BIP
